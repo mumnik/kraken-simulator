@@ -5,9 +5,10 @@
          colors="true"
 >
     <testsuites>
-        <testsuite name="Unit">
-            <directory>tests/Unit</directory>
-        </testsuite>
+        <!-- No tests/Unit — every test here hits real routes/signing, so
+             they're all Feature tests; an empty Unit directory isn't even
+             tracked by git, which made PHPUnit 11 hard-fail in CI (exit 2,
+             "Test directory ... not found") rather than just skip it. -->
         <testsuite name="Feature">
             <directory>tests/Feature</directory>
         </testsuite>
