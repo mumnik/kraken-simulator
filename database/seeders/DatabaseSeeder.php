@@ -37,12 +37,20 @@ class DatabaseSeeder extends Seeder
         // network in CI, real Kraken briefly down, etc.), in which case
         // they're what a client sees instead of an error. Pairs chosen to
         // cover this project's own backend (BTC/USDT wallets, EUR/USD
-        // fiat ledgers) plus ETH for a little extra breadth.
+        // fiat ledgers) plus ETH for a little extra breadth. BTC/USDT and
+        // ETH/USDT are real Kraken pairs too (XBTUSDT/ETHUSDT) — found
+        // missing live 2026-11-01: KrakenVenue has no triangulation
+        // through a third currency, only a direct pair or its exact
+        // reverse, so a crypto/crypto conversion with neither leg seeded
+        // genuinely has no rate, same as it would against the real Kraken
+        // for an unlisted pair.
         $defaults = [
             ['BTC', 'EUR', 65000],
             ['BTC', 'USD', 70000],
+            ['BTC', 'USDT', 65000],
             ['ETH', 'EUR', 3000],
             ['ETH', 'USD', 3200],
+            ['ETH', 'USDT', 3000],
             ['USDT', 'EUR', 0.90],
             ['USDT', 'USD', 1.00],
         ];

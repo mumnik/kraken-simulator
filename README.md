@@ -36,8 +36,12 @@ code that would place real orders against Kraken.
   client's own error handling has to be written against.
 
 Assets known: **BTC, ETH, EUR, USD, USDT** (see `app/Kraken/AssetCodes.php`
-to add another). Pairs seeded by default: BTC/EUR, BTC/USD, ETH/EUR,
-ETH/USD, USDT/EUR, USDT/USD (see `database/seeders/DatabaseSeeder.php`).
+to add another). Pairs seeded by default: BTC/EUR, BTC/USD, BTC/USDT,
+ETH/EUR, ETH/USD, ETH/USDT, USDT/EUR, USDT/USD (see
+`database/seeders/DatabaseSeeder.php`). A pair with neither leg seeded —
+even a real one on the actual Kraken — has no rate here, same as
+`KrakenVenue`'s own real-protocol behavior: no triangulation through a
+third currency, only the exact pair or its reverse.
 
 ## What it deliberately does not emulate
 
