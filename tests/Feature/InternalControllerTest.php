@@ -35,9 +35,19 @@ class InternalControllerTest extends TestCase
     {
         $this->postJson('/internal/prices', ['base' => 'BTC', 'quote' => 'EUR', 'mid_price' => 123456])
             ->assertOk();
-        $this->postJson('/internal/settings', ['volatility_pct' => 0])->assertOk();
+        $this->postJson('/internal/asset-volatility', ['asset' => 'BTC', 'volatility_pct' => 0])->assertOk();
+        $this->postJson('/internal/asset-volatility', ['asset' => 'EUR', 'volatility_pct' => 0])->assertOk();
 
         $this->getJson('/0/public/Ticker?pair=XBTEUR')
             ->assertJsonPath('result.XXBTZEUR.c.0', '123456.0000000000');
+    }
+
+    public function test_setting_a_price_switches_the_pair_to_manual_and_live_switches_it_back(): void
+    {
+        $this->postJson('/internal/prices', ['base' => 'BTC', 'quote' => 'EUR', 'mid_price' => 70000])->assertOk();
+        $this->assertSame('manual', KrakenPrice::where('base', 'BTC')->where('quote', 'EUR')->value('source'));
+
+        $this->postJson('/internal/prices/live', ['base' => 'BTC', 'quote' => 'EUR'])->assertOk();
+        $this->assertSame('live', KrakenPrice::where('base', 'BTC')->where('quote', 'EUR')->value('source'));
     }
 }

@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Kraken\AssetVolatility;
 use App\Kraken\Pricer;
 use App\Models\KrakenOrder;
 use App\Models\KrakenSetting;
@@ -18,8 +19,10 @@ class AddOrderTest extends TestCase
         parent::setUp();
         app(Pricer::class)->set('BTC', 'EUR', 65000);
         // Zero volatility here — these tests check exact fill/margin
-        // arithmetic; TickerTest is where the jitter itself gets covered.
-        KrakenSetting::current()->update(['volatility_pct' => 0]);
+        // arithmetic; TickerTest/VolatilityTest are where the jitter
+        // itself gets covered.
+        app(AssetVolatility::class)->set('BTC', 0);
+        app(AssetVolatility::class)->set('EUR', 0);
     }
 
     public function test_a_market_sell_fills_immediately_and_moves_both_balances(): void

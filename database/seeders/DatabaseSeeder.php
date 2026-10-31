@@ -2,8 +2,10 @@
 
 namespace Database\Seeders;
 
+use App\Kraken\AssetVolatility;
 use App\Kraken\Pricer;
 use App\Models\KrakenApiCredential;
+use App\Models\KrakenAssetVolatility;
 use App\Models\KrakenBalance;
 use App\Models\KrakenPrice;
 use Illuminate\Database\Seeder;
@@ -20,16 +22,20 @@ use Illuminate\Support\Str;
  */
 class DatabaseSeeder extends Seeder
 {
-    public function run(Pricer $pricer): void
+    public function run(Pricer $pricer, AssetVolatility $volatility): void
     {
         $this->seedPrices($pricer);
+        $this->seedVolatility($volatility);
         $this->seedDemoCredential();
     }
 
     private function seedPrices(Pricer $pricer): void
     {
-        // Round, plausible, deliberately NOT an attempt at real market
-        // data — this is a simulator, not a price feed. Pairs chosen to
+        // Starting points only — seeded as 'live', so the very first read
+        // of each pulls a real price from the real Kraken and these
+        // numbers never actually get used unless that fetch fails (no
+        // network in CI, real Kraken briefly down, etc.), in which case
+        // they're what a client sees instead of an error. Pairs chosen to
         // cover this project's own backend (BTC/USDT wallets, EUR/USD
         // fiat ledgers) plus ETH for a little extra breadth.
         $defaults = [
@@ -42,7 +48,21 @@ class DatabaseSeeder extends Seeder
         ];
         foreach ($defaults as [$base, $quote, $price]) {
             if (! KrakenPrice::where('base', $base)->where('quote', $quote)->exists()) {
-                $pricer->set($base, $quote, $price);
+                $pricer->set($base, $quote, $price, source: 'live');
+            }
+        }
+    }
+
+    private function seedVolatility(AssetVolatility $volatility): void
+    {
+        // Rough, illustrative figures, not calibrated against real
+        // historical data — BTC/ETH wobble noticeably more than fiat or a
+        // stablecoin does. A pair's own wobble combines both sides in
+        // quadrature, see AssetVolatility::forPair().
+        $defaults = ['BTC' => 1.5, 'ETH' => 2.0, 'EUR' => 0.05, 'USD' => 0.05, 'USDT' => 0.05];
+        foreach ($defaults as $asset => $pct) {
+            if (! KrakenAssetVolatility::find($asset)) {
+                $volatility->set($asset, $pct);
             }
         }
     }

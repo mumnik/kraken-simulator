@@ -12,8 +12,9 @@ code that would place real orders against Kraken.
 
 ## What it emulates
 
-- **`GET /0/public/Ticker`** — live(-ish) price per pair, jittered on every
-  read (see "Volatility" below). Also `GET /0/public/Time` and
+- **`GET /0/public/Ticker`** — a real price, tracked live from the real
+  Kraken and jittered on every read by a per-asset volatility (see "Live
+  price tracking" and "Volatility" below). Also `GET /0/public/Time` and
   `GET /0/public/SystemStatus`, since a lot of real Kraken client SDKs
   probe one of those before anything else.
 - **`POST /0/private/AddOrder`** — market and limit orders, spot and
@@ -96,22 +97,58 @@ in this project's ecosystem). Never shares a secret with the signed
 
 | | |
 |---|---|
-| `POST /internal/prices` | `{base, quote, mid_price}` — set a pair's mid price. Every `Ticker` read and market-order fill wobbles around whatever this is currently set to. |
-| `GET /internal/prices` | List every seeded pair's current mid price. |
+| `POST /internal/prices` | `{base, quote, mid_price}` — pin a pair's mid price and switch it to `manual` (see "Live price tracking"). Every `Ticker` read and market-order fill wobbles around whatever this is currently set to. |
+| `POST /internal/prices/live` | `{base, quote}` — switch a pair back to tracking the real Kraken; the next read refreshes it. |
+| `GET /internal/prices` | List every seeded pair's current mid price, `source` (`live`/`manual`), and when it was last synced. |
 | `POST /internal/balances` | `{api_key, asset, amount}` — set a credential's balance for one asset directly (top up a demo account, or force an insufficient-funds scenario). |
-| `GET\|POST /internal/settings` | `{volatility_pct, random_fail_probability}` — read or update the two global knobs below. |
+| `GET\|POST /internal/settings` | `{random_fail_probability}` — read or update the failure-injection knob below. |
+| `POST /internal/asset-volatility` | `{asset, volatility_pct}` — set how much one asset wobbles (see "Volatility" below). |
+| `GET /internal/asset-volatility` | List every asset's configured volatility. |
 | `GET /internal/credentials` | List every seeded API key (not secrets — those are shown once at seed time and never again) with current balances. |
 | `GET /internal/orders` | Last 100 orders, filled and rejected alike, with `reject_reason` for the rejected ones. |
+| `POST /internal/webhooks` | `{url, events[], api_key?}` — register a webhook endpoint (see "Webhooks" below). Returns `{id, secret}` — the secret is shown once. |
+| `GET /internal/webhooks` | List registered endpoints (never their secrets). |
+| `DELETE /internal/webhooks/{id}` | Remove an endpoint. |
+| `GET /internal/webhooks/deliveries` | Last 100 delivery attempts, with each one's HTTP status or error. |
+
+### Live price tracking
+
+Every seeded pair starts as `source: 'live'`: whenever a `Ticker` read (or
+a market-order fill) finds its stored `mid_price` older than
+`KRAKEN_LIVE_REFRESH_SECONDS` (default 30s), it's refreshed from the real
+Kraken's own public `Ticker` endpoint (`KRAKEN_LIVE_UPSTREAM_URL`) before
+the volatility jitter is applied — so by default this simulator's
+"market" genuinely tracks the real one, not a frozen demo number. A
+failed fetch (network hiccup, real Kraken briefly down) falls back to the
+last known price rather than erroring — this simulator's own availability
+should never depend on the real exchange's.
+
+`POST /internal/prices` pins a pair to an exact value and switches it to
+`manual` — a live refresh never touches a manual pair, so a scenario
+deliberately engineered for a test (a specific price, a specific R1-vs-R2
+drift) holds until `POST /internal/prices/live` asks for it back. Set
+`KRAKEN_LIVE_UPSTREAM_URL=` (empty) to disable live tracking globally —
+every pair then just stays on whatever it was last set to, with no
+outbound network call ever made (this is what `phpunit.xml` does for the
+test suite).
 
 ### Volatility
 
-`volatility_pct` (default `0.15`, i.e. ±0.15%) is how much a `Ticker` read
-or a market-order fill wobbles off the stored `mid_price` — every read is
-jittered independently and never persists, so repeated reads wander
-around the set price, never drift away from it. Set it to `0` for
-deterministic test assertions; turn it up to deliberately engineer an
-R1-vs-R2 rate-drift rejection in code that locks a rate and re-checks it
-later (exactly what `mumnik/ledger`'s own `FxService::confirm()` does).
+Configured **per asset**, not per pair (`POST /internal/asset-volatility`,
+default seeded: BTC 1.5%, ETH 2.0%, EUR/USD/USDT 0.05%) — a real market's
+wobble is a property of each side (BTC moves a lot regardless of what
+it's quoted against; a stablecoin barely moves at all), so this scales
+with however many assets exist rather than needing a number per pair. A
+pair's own wobble combines both sides' volatility in quadrature
+(`sqrt(a² + b²)`, the standard way to combine two independent sources of
+noise). Every `Ticker` read and market-order fill is jittered
+independently off the current `mid_price` and never persists, so repeated
+reads wander around it, never drift away on their own. Set an asset to
+`0` for deterministic test assertions; turn it up to make R1-vs-R2 drift
+rejection easy to trigger on demand (exactly what `mumnik/ledger`'s own
+`FxService::confirm()` checks for), or set a currently-unconfigured
+asset's volatility to pin down a new pair's behavior explicitly instead
+of relying on the default fallback (0.5%).
 
 ### Failure injection
 
@@ -131,6 +168,41 @@ money on an exchange needs to handle that, not just the deterministic
 retry/error-handling path on demand; every attempt (filled, rejected for
 a real reason, or rejected by this) is logged to `GET /internal/orders`
 either way.
+
+### Webhooks
+
+Not part of Kraken's real protocol at all — real Kraken has no webhooks,
+only REST polling and a WebSocket feed. This is this simulator's own
+addition, for code that wants to react to an order filling or failing
+without polling `QueryOrders` in a loop.
+
+```bash
+curl -X POST http://localhost:8000/internal/webhooks \
+  -H 'Content-Type: application/json' \
+  -d '{"url": "https://your-app.test/hooks/kraken", "events": ["order.filled", "order.rejected"]}'
+# => {"data": {"id": 1, "secret": "..."}}  — the secret is shown once, save it
+```
+
+Omit `api_key` to fire for every credential's events, or pass one to
+scope the subscription to a single simulated account. Events: `order.filled`,
+`order.rejected`, `order.canceled`. Each delivery is a `POST` to your `url`
+with:
+
+```json
+{"event": "order.filled", "data": {"txid": "...", "pair": "BTC/EUR", "...": "..."}, "timestamp": "2026-10-31T12:00:00+00:00"}
+```
+
+signed the same way this simulator verifies its own inbound requests —
+over the exact raw JSON body, via `X-Kraken-Simulator-Signature:
+hmac_sha256(body, secret)`. Verify it with `hash_equals(expected,
+$receivedSignature)`.
+
+Delivery is synchronous and inline with the request that triggered it
+(`AddOrder`/`CancelOrder`), with a short timeout
+(`KRAKEN_WEBHOOK_TIMEOUT_SECONDS`, default 3s) — a slow or dead endpoint
+never fails the order itself, it's just recorded as a failed delivery.
+`GET /internal/webhooks/deliveries` is where to check whether something
+actually fired, not the API response.
 
 ## Tests
 

@@ -53,10 +53,11 @@ class TickerTest extends TestCase
             $prices[] = (float) $this->getJson('/0/public/Ticker?pair=XBTEUR')->json('result.XXBTZEUR.c.0');
         }
 
-        // Default seeded volatility is 0.15% — every read should land
-        // within a couple of multiples of that around the seeded 65000.
+        // Seeded per-asset volatility is BTC=1.5%, EUR=0.05% — combined in
+        // quadrature that's ~1.5% for the pair, so every read should land
+        // comfortably within 2% of the seeded 65000.
         foreach ($prices as $p) {
-            $this->assertEqualsWithDelta(65000, $p, 65000 * 0.01);
+            $this->assertEqualsWithDelta(65000, $p, 65000 * 0.02);
         }
         // Not all 20 reads landed on the exact same number — the jitter is
         // actually doing something, not a no-op.

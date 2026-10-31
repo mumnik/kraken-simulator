@@ -32,6 +32,10 @@ use Illuminate\Support\Str;
  * closing/unwinding a leveraged position isn't modeled at all yet. Good
  * enough to exercise "insufficient margin" as a distinct path from
  * "insufficient funds" on a plain spot order; not a real margin system.
+ *
+ * Every terminal outcome (filled, rejected, canceled) also fires a
+ * WebhookDispatcher event of the same name — see that class's own
+ * docblock for why, and why it happens outside the DB transaction below.
  */
 class OrderEngine
 {
@@ -47,7 +51,11 @@ class OrderEngine
     // this simulator doesn't model wildly different minimums per asset.
     private const MIN_VOLUME = 0.0001;
 
-    public function __construct(private readonly Pricer $pricer) {}
+    public function __construct(
+        private readonly Pricer $pricer,
+        private readonly WebhookDispatcher $webhooks,
+    ) {
+    }
 
     /**
      * @param array{pair: string, type: string, ordertype: string, volume: string, price?: string, leverage?: string} $params
@@ -125,7 +133,7 @@ class OrderEngine
             return $this->reject($credential, $pairLabel, $type, $ordertype, $volume, $limitPrice, $leverage, $code);
         }
 
-        return DB::transaction(function () use ($credential, $base, $quote, $pairLabel, $type, $ordertype, $volume, $fillPrice, $limitPrice, $leverage, $fillsNow) {
+        $order = DB::transaction(function () use ($credential, $base, $quote, $pairLabel, $type, $ordertype, $volume, $fillPrice, $limitPrice, $leverage, $fillsNow) {
             if ($fillsNow) {
                 $notional = $volume * $fillPrice;
                 if ($leverage !== null) {
@@ -139,7 +147,7 @@ class OrderEngine
                 }
             }
 
-            $order = KrakenOrder::create([
+            return KrakenOrder::create([
                 'kraken_api_credential_id' => $credential->id,
                 'txid' => $this->newTxid(),
                 'pair' => $pairLabel,
@@ -152,9 +160,16 @@ class OrderEngine
                 'opened_at' => now(),
                 'closed_at' => $fillsNow ? now() : null,
             ]);
-
-            return OrderResult::success($order);
         });
+
+        // Outside the transaction, deliberately — an HTTP call to a
+        // webhook endpoint shouldn't hold the DB transaction (and, on
+        // sqlite, its write lock) open for however long that takes.
+        if ($order->status === 'closed') {
+            $this->webhooks->dispatch('order.filled', $this->orderPayload($order), $credential->id);
+        }
+
+        return OrderResult::success($order);
     }
 
     public function cancelOrder(KrakenApiCredential $credential, string $txid): bool
@@ -165,8 +180,24 @@ class OrderEngine
             return false;
         }
         $order->update(['status' => 'canceled', 'closed_at' => now()]);
+        $this->webhooks->dispatch('order.canceled', $this->orderPayload($order), $credential->id);
 
         return true;
+    }
+
+    /** @return array<string, mixed> */
+    private function orderPayload(KrakenOrder $order): array
+    {
+        return [
+            'txid' => $order->txid,
+            'pair' => $order->pair,
+            'type' => $order->type,
+            'ordertype' => $order->ordertype,
+            'volume' => (string) $order->volume,
+            'price' => $order->price !== null ? (string) $order->price : null,
+            'status' => $order->status,
+            'reject_reason' => $order->reject_reason,
+        ];
     }
 
     private function reject(
@@ -179,7 +210,7 @@ class OrderEngine
         ?float $leverage,
         string $code,
     ): OrderResult {
-        KrakenOrder::create([
+        $order = KrakenOrder::create([
             'kraken_api_credential_id' => $credential->id,
             'txid' => $this->newTxid(),
             'pair' => $pairLabel,
@@ -193,6 +224,7 @@ class OrderEngine
             'opened_at' => now(),
             'closed_at' => now(),
         ]);
+        $this->webhooks->dispatch('order.rejected', $this->orderPayload($order), $credential->id);
 
         return OrderResult::failure($code);
     }

@@ -25,6 +25,11 @@
         <env name="CACHE_STORE" value="array"/>
         <env name="DB_CONNECTION" value="sqlite"/>
         <env name="DB_DATABASE" value=":memory:"/>
+        <!-- Empty = LiveKrakenClient never calls out to the real internet
+             during a test run; a 'live' pair just keeps reading its seeded
+             baseline. LiveTrackingTest overrides this per-test with
+             Http::fake() to exercise the real fetch path. -->
+        <env name="KRAKEN_LIVE_UPSTREAM_URL" value=""/>
         <env name="MAIL_MAILER" value="array"/>
         <env name="PULSE_ENABLED" value="false"/>
         <env name="QUEUE_CONNECTION" value="sync"/>

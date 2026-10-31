@@ -30,8 +30,15 @@ Route::prefix('0/private')->middleware('kraken.signed')->group(function () {
 Route::prefix('internal')->middleware('bearer.auth')->group(function () {
     Route::post('/prices', [InternalController::class, 'setPrice']);
     Route::get('/prices', [InternalController::class, 'listPrices']);
+    Route::post('/prices/live', [InternalController::class, 'goLive']);
     Route::post('/balances', [InternalController::class, 'setBalance']);
     Route::match(['get', 'post'], '/settings', [InternalController::class, 'settings']);
+    Route::post('/asset-volatility', [InternalController::class, 'setAssetVolatility']);
+    Route::get('/asset-volatility', [InternalController::class, 'listAssetVolatility']);
     Route::get('/credentials', [InternalController::class, 'credentials']);
     Route::get('/orders', [InternalController::class, 'orders']);
+    Route::post('/webhooks', [InternalController::class, 'createWebhook']);
+    Route::get('/webhooks', [InternalController::class, 'listWebhooks']);
+    Route::delete('/webhooks/{id}', [InternalController::class, 'deleteWebhook']);
+    Route::get('/webhooks/deliveries', [InternalController::class, 'webhookDeliveries']);
 });
