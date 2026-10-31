@@ -1,0 +1,30 @@
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+
+class KrakenOrder extends Model
+{
+    protected $fillable = [
+        'kraken_api_credential_id', 'txid', 'pair', 'type', 'ordertype',
+        'volume', 'price', 'leverage', 'status', 'reject_reason', 'opened_at', 'closed_at',
+    ];
+
+    protected function casts(): array
+    {
+        return [
+            'volume' => 'decimal:10',
+            'price' => 'decimal:10',
+            'leverage' => 'decimal:2',
+            'opened_at' => 'datetime',
+            'closed_at' => 'datetime',
+        ];
+    }
+
+    public function credential(): BelongsTo
+    {
+        return $this->belongsTo(KrakenApiCredential::class, 'kraken_api_credential_id');
+    }
+}
