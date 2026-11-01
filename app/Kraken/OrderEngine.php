@@ -36,6 +36,22 @@ use Illuminate\Support\Str;
  * Every terminal outcome (filled, rejected, canceled) also fires a
  * WebhookDispatcher event of the same name — see that class's own
  * docblock for why, and why it happens outside the DB transaction below.
+ *
+ * KrakenSetting::fill_delay_seconds (0 = instant, the only behavior that
+ * existed before 2026-11-01) defers an order that WOULD fill immediately:
+ * it's created 'open' with closes_at set and its price already locked in,
+ * but the balance move itself — and the order.filled webhook — wait for
+ * finalizeIfDue() to actually apply once closes_at has passed. QueryOrders/
+ * OpenOrders call that on every order they return, which is this
+ * simulator's only "clock" — there's no background worker, so an order
+ * due to close only actually closes the next time something asks about
+ * it, same spirit as a real exchange only telling you the state when you
+ * poll. The balance SUFFICIENCY check (can this account even afford it)
+ * still happens at submission time regardless of the delay — a real
+ * exchange reserves the funds then, not at fill time — only the real
+ * transfer is deferred; this simulator doesn't model that reservation
+ * explicitly (a concurrent order against the same balance during the
+ * delay window isn't prevented), a known simplification.
  */
 class OrderEngine
 {
@@ -133,21 +149,11 @@ class OrderEngine
             return $this->reject($credential, $pairLabel, $type, $ordertype, $volume, $limitPrice, $leverage, $code);
         }
 
-        $order = DB::transaction(function () use ($credential, $base, $quote, $pairLabel, $type, $ordertype, $volume, $fillPrice, $limitPrice, $leverage, $fillsNow) {
-            if ($fillsNow) {
-                $notional = $volume * $fillPrice;
-                if ($leverage !== null) {
-                    $this->adjustBalance($credential, $quote, -($notional / $leverage));
-                } elseif ($type === 'sell') {
-                    $this->adjustBalance($credential, $base, -$volume);
-                    $this->adjustBalance($credential, $quote, $notional);
-                } else {
-                    $this->adjustBalance($credential, $quote, -$notional);
-                    $this->adjustBalance($credential, $base, $volume);
-                }
-            }
+        $fillDelaySeconds = (int) KrakenSetting::current()->fill_delay_seconds;
+        $fillsImmediately = $fillsNow && $fillDelaySeconds <= 0;
 
-            return KrakenOrder::create([
+        $order = DB::transaction(function () use ($credential, $base, $quote, $pairLabel, $type, $ordertype, $volume, $fillPrice, $limitPrice, $leverage, $fillsNow, $fillsImmediately, $fillDelaySeconds) {
+            $order = KrakenOrder::create([
                 'kraken_api_credential_id' => $credential->id,
                 'txid' => $this->newTxid(),
                 'pair' => $pairLabel,
@@ -156,10 +162,17 @@ class OrderEngine
                 'volume' => $volume,
                 'price' => $fillsNow ? $fillPrice : $limitPrice,
                 'leverage' => $leverage,
-                'status' => $fillsNow ? 'closed' : 'open',
+                'status' => $fillsImmediately ? 'closed' : 'open',
                 'opened_at' => now(),
-                'closed_at' => $fillsNow ? now() : null,
+                'closes_at' => $fillsNow && ! $fillsImmediately ? now()->addSeconds($fillDelaySeconds) : null,
+                'closed_at' => $fillsImmediately ? now() : null,
             ]);
+
+            if ($fillsImmediately) {
+                $this->applyFill($order, $credential, $base, $quote);
+            }
+
+            return $order;
         });
 
         // Outside the transaction, deliberately — an HTTP call to a
@@ -170,6 +183,48 @@ class OrderEngine
         }
 
         return OrderResult::success($order);
+    }
+
+    /**
+     * Called by QueryOrders/OpenOrders on every order they're about to
+     * return — see this class's own docblock for why this (not a
+     * background worker) is how a delayed fill actually happens.
+     */
+    public function finalizeIfDue(KrakenOrder $order): KrakenOrder
+    {
+        if (! $order->isDueToFinalize()) {
+            return $order;
+        }
+
+        [$base, $quote] = explode('/', $order->pair);
+
+        DB::transaction(function () use ($order, $base, $quote) {
+            $this->applyFill($order, $order->credential, $base, $quote);
+        });
+
+        $this->webhooks->dispatch('order.filled', $this->orderPayload($order->fresh()), $order->kraken_api_credential_id);
+
+        return $order->fresh();
+    }
+
+    /** Moves the balances a filled $order represents and marks it closed — shared by the instant and deferred-fill paths. */
+    private function applyFill(KrakenOrder $order, KrakenApiCredential $credential, string $base, string $quote): void
+    {
+        $volume = (float) $order->volume;
+        $price = (float) $order->price;
+        $notional = $volume * $price;
+
+        if ($order->leverage !== null) {
+            $this->adjustBalance($credential, $quote, -($notional / (float) $order->leverage));
+        } elseif ($order->type === 'sell') {
+            $this->adjustBalance($credential, $base, -$volume);
+            $this->adjustBalance($credential, $quote, $notional);
+        } else {
+            $this->adjustBalance($credential, $quote, -$notional);
+            $this->adjustBalance($credential, $base, $volume);
+        }
+
+        $order->update(['status' => 'closed', 'closed_at' => now()]);
     }
 
     public function cancelOrder(KrakenApiCredential $credential, string $txid): bool

@@ -90,7 +90,13 @@ class PrivateController extends Controller
     public function openOrders(Request $request): JsonResponse
     {
         $credential = $this->credential($request);
-        $open = $credential->orders()->where('status', 'open')->get();
+        // A deferred-fill order due now closes right here, same as a real
+        // exchange's state only actually changing when something asks —
+        // see OrderEngine::finalizeIfDue()'s own docblock. Re-filter by
+        // 'open' after, since finalizing one just moved it out of that set.
+        $open = $credential->orders()->where('status', 'open')->get()
+            ->map(fn (KrakenOrder $o) => $this->orders->finalizeIfDue($o))
+            ->filter(fn (KrakenOrder $o) => $o->status === 'open');
 
         return response()->json(['error' => [], 'result' => ['open' => $this->ordersById($open)]]);
     }
@@ -99,7 +105,8 @@ class PrivateController extends Controller
     {
         $credential = $this->credential($request);
         $txids = array_filter(explode(',', (string) $request->input('txid', '')));
-        $orders = $credential->orders()->whereIn('txid', $txids)->get();
+        $orders = $credential->orders()->whereIn('txid', $txids)->get()
+            ->map(fn (KrakenOrder $o) => $this->orders->finalizeIfDue($o));
 
         return response()->json(['error' => [], 'result' => $this->ordersById($orders)]);
     }

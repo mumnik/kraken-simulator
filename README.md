@@ -105,7 +105,7 @@ in this project's ecosystem). Never shares a secret with the signed
 | `POST /internal/prices/live` | `{base, quote}` — switch a pair back to tracking the real Kraken; the next read refreshes it. |
 | `GET /internal/prices` | List every seeded pair's current mid price, `source` (`live`/`manual`), and when it was last synced. |
 | `POST /internal/balances` | `{api_key, asset, amount}` — set a credential's balance for one asset directly (top up a demo account, or force an insufficient-funds scenario). |
-| `GET\|POST /internal/settings` | `{random_fail_probability}` — read or update the failure-injection knob below. |
+| `GET\|POST /internal/settings` | `{random_fail_probability, fill_delay_seconds}` — read or update the two knobs below. |
 | `POST /internal/asset-volatility` | `{asset, volatility_pct}` — set how much one asset wobbles (see "Volatility" below). |
 | `GET /internal/asset-volatility` | List every asset's configured volatility. |
 | `GET /internal/credentials` | List every seeded API key (not secrets — those are shown once at seed time and never again) with current balances. |
@@ -153,6 +153,29 @@ rejection easy to trigger on demand (exactly what `mumnik/ledger`'s own
 `FxService::confirm()` checks for), or set a currently-unconfigured
 asset's volatility to pin down a new pair's behavior explicitly instead
 of relying on the default fallback (0.5%).
+
+### Fill delay
+
+`fill_delay_seconds` (default `0`, i.e. instant — the only behavior that
+existed before this) is how long a market order (or a limit order that
+crosses the current market) sits `open` before it actually fills. Real
+Kraken doesn't confirm a fill synchronously inside `AddOrder`'s own
+response either — a real caller always learns it by polling
+`QueryOrders`/`OpenOrders` (or a WebSocket feed this simulator doesn't
+emulate), so `0` here is itself already a simplification, not a protocol
+guarantee. Set this above `0` to exercise that polling path for real:
+the order's price is locked in at submission, but the balance move and
+the `order.filled` webhook both wait until `QueryOrders`/`OpenOrders` is
+actually called again after `closes_at` has passed — there's no
+background worker driving this, so a client that never polls again never
+sees the fill (same as a real exchange never pushing it to you).
+
+Whatever this is set to, the caller waiting on it needs enough slack
+further up the chain: `mumnik/ledger`'s own payment-gateway polls with
+`KRAKEN_ORDER_POLL_ATTEMPTS` × `KRAKEN_ORDER_POLL_INTERVAL_MS`, which has
+to exceed this value with margin, and backend's own HTTP timeout calling
+payment-gateway has to exceed *that* — see payment-gateway's own
+`App\Exchange\KrakenVenue` for the other end of this.
 
 ### Failure injection
 

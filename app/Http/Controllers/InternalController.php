@@ -80,11 +80,14 @@ class InternalController extends Controller
     {
         $setting = KrakenSetting::current();
         if ($request->isMethod('post')) {
-            $data = $request->validate(['random_fail_probability' => ['sometimes', 'numeric', 'between:0,1']]);
+            $data = $request->validate([
+                'random_fail_probability' => ['sometimes', 'numeric', 'between:0,1'],
+                'fill_delay_seconds' => ['sometimes', 'integer', 'min:0'],
+            ]);
             $setting->update($data);
         }
 
-        return response()->json(['data' => $setting->only(['random_fail_probability'])]);
+        return response()->json(['data' => $setting->only(['random_fail_probability', 'fill_delay_seconds'])]);
     }
 
     public function setAssetVolatility(Request $request): JsonResponse
